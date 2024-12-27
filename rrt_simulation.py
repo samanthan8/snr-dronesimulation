@@ -4,9 +4,10 @@ import pybullet_data
 import time
 import numpy as np
 import random
+import json
+import os
 
 # --- Parameters ---
-NUM_DRONES = 5
 NUM_ITERATIONS = 5000
 DELTA = 0.5
 COLLISION_CHECK_STEP = 0.05
@@ -14,23 +15,34 @@ DRONE_RADIUS = 0.1
 HOVER_HEIGHT = 1.0
 ARENA_SIZE = 5
 SIGNAL_FOUND_THRESHOLD = 0.7
-SEARCH_RADIUS = 0.5 # Radius for collision detection
+SEARCH_RADIUS = 0.5
+SIGNAL_NOISE_STD = 0.05
+NUM_RUNS = 30
+NUM_DRONES_OPTIONS = [1, 5, 10, 15, 20, 25, 30]  # Different numbers of drones to evaluate
+
+# Define the path to the local directory where the URDF files are stored
+LOCAL_URDF_PATH = os.path.dirname(os.path.abspath(__file__))  # Get the directory of the current script
+# Define the URDF file paths
+plane_urdf_path = os.path.join(LOCAL_URDF_PATH, "plane.urdf")  # Make sure 'plane.urdf' is in the same folder
+quadrotor_urdf_path = os.path.join(LOCAL_URDF_PATH, "quadrotor.urdf")  # Make sure 'quadrotor.urdf' is in the same folder
+
 
 # --- Environment Setup ---
-physicsClient = p.connect(p.GUI)
+physicsClient = p.connect(p.DIRECT)  # Use p.DIRECT for faster simulation without GUI
 p.setAdditionalSearchPath(pybullet_data.getDataPath())
 p.setGravity(0, 0, -9.81)
-planeId = p.loadURDF("plane.urdf")
+planeId = p.loadURDF(plane_urdf_path)
 
-# --- Start and Target Positions ---
-start_positions = [[-4, -4, HOVER_HEIGHT],
-                   [-4, 4, HOVER_HEIGHT],
-                   [4, -4, HOVER_HEIGHT],
-                   [0, 4, HOVER_HEIGHT],
-                   [0, 0, HOVER_HEIGHT]]  # Example: Multiple start positions
+# --- Function to Generate Random Start and Target Positions ---
+def generate_random_start_pos():
+    return [random.uniform(-ARENA_SIZE, ARENA_SIZE),
+            random.uniform(-ARENA_SIZE, ARENA_SIZE),
+            HOVER_HEIGHT]
 
-# The target's position is unknown to the drone initially.
-unknown_target_pos = [4, 4, HOVER_HEIGHT]
+def generate_random_target_pos():
+    return [random.uniform(-ARENA_SIZE, ARENA_SIZE),
+            random.uniform(-ARENA_SIZE, ARENA_SIZE),
+            HOVER_HEIGHT]
 
 # --- Create obstacles ---
 def create_obstacle(pos, halfExtents, color=[0, 0, 1, 1]):
@@ -46,13 +58,16 @@ obstacles.append(create_obstacle([1.5, -1, 0.75], [0.7, 0.3, 0.75], [1, 0.5, 0, 
 obstacles.append(create_obstacle([3, 3, 0.5], [0.2, 0.2, 0.5]))
 obstacles.append(create_obstacle([-3, -3, 0.5], [0.2, 0.2, 0.5]))
 
-# --- Signal Strength Function ---
+# --- Signal Strength Function with Noise ---
 def get_signal_strength(drone_pos, target_pos):
     distance = np.linalg.norm(np.array(drone_pos) - np.array(target_pos))
-    if distance < 0.1:
-        return 1.0
-    else:
-        return 1.0 / (distance ** 2)
+    signal_strength = 1.0 / (distance ** 2 + 1e-6)
+
+    # Add Gaussian noise
+    noise = np.random.normal(0, SIGNAL_NOISE_STD)
+    noisy_signal_strength = signal_strength + noise
+
+    return max(0, noisy_signal_strength)
 
 # --- RRT Node Class ---
 class Node:
@@ -66,11 +81,11 @@ class Drone:
     def __init__(self, id, start_pos):
         self.id = id
         self.pos = np.array(start_pos, dtype=np.float64)
-        self.body = p.loadURDF("quadrotor.urdf", start_pos)
+        self.body = p.loadURDF(quadrotor_urdf_path, start_pos, globalScaling=DRONE_RADIUS*10)
         self.path = []
         self.target_found = False
         self.target_found_in_iteration = -1
-        self.tree = [Node(start_pos)] # Each drone maintains its own RRT
+        self.tree = [Node(start_pos)]
 
     def move_along_path(self):
         if self.path:
@@ -142,62 +157,115 @@ def reconstruct_path(goal_node):
         current_node = current_node.parent
     return path[::-1]
 
-# --- Initialize Drones ---
-drones = [Drone(i, start_positions[i%len(start_positions)]) for i in range(NUM_DRONES)]
+# --- Create Results Directory ---
+RESULTS_DIR = "rrt_simulation_results"
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # --- Main Loop ---
-target_found = False
-iterations_to_find_target = 0
-for iteration in range(NUM_ITERATIONS):
-    print(f"Iteration: {iteration + 1}")
+start_positions = [[-4, -4, HOVER_HEIGHT],
+                   [-4, 4, HOVER_HEIGHT],
+                   [4, -4, HOVER_HEIGHT],
+                   [4, 4, HOVER_HEIGHT],
+                   [0, 0, HOVER_HEIGHT],
+                   [-2, -2, HOVER_HEIGHT],
+                   [-2, 2, HOVER_HEIGHT],
+                   [2, -2, HOVER_HEIGHT],
+                   [2, 2, HOVER_HEIGHT],
+                   [0, 2, HOVER_HEIGHT],
+                   [0, -2, HOVER_HEIGHT],
+                   [-3, 0, HOVER_HEIGHT],
+                   [3, 0, HOVER_HEIGHT],
+                   [-1, 0, HOVER_HEIGHT],
+                   [1, 0, HOVER_HEIGHT],
+                   [0, 1, HOVER_HEIGHT],
+                   [0, -1, HOVER_HEIGHT],
+                   [-1, -1, HOVER_HEIGHT],
+                   [-1, 1, HOVER_HEIGHT],
+                   [1, -1, HOVER_HEIGHT],
+                   [1, 1, HOVER_HEIGHT]]
 
-    for drone in drones:
-        # RRT algorithm for each drone
-        if not drone.target_found:
-            random_config = get_random_config()
-            nearest = nearest_node(drone.tree, random_config)
-            new_pos = steer(nearest.pos, random_config)
+for num_drones in NUM_DRONES_OPTIONS:
+    results_file = os.path.join(RESULTS_DIR, f"rrt_num_drones_{num_drones}.jsonl")
+    print(f"Running RRT with {num_drones} drones...")
 
-            if is_collision_free(drone, nearest.pos, new_pos):
-                new_node = Node(new_pos)
-                new_node.parent = nearest
-                new_node.signal_strength = get_signal_strength(new_pos, unknown_target_pos)
-                drone.tree.append(new_node)
+    for run in range(NUM_RUNS):
+        print(f"  Run: {run + 1}")
 
-                # Draw the new edge
-                p.addUserDebugLine(nearest.pos, new_pos, [0, 0, 1], lineWidth=2)
+        # Reinitialize PyBullet environment for each run
+        p.resetSimulation()
+        p.setGravity(0, 0, -9.81)
+        planeId = p.loadURDF(plane_urdf_path)
 
-                # Check if target is found based on signal strength
-                if new_node.signal_strength > SIGNAL_FOUND_THRESHOLD:
-                    print(f"Target found by drone {drone.id} in iteration {iteration+1}!")
-                    drone.target_found = True
-                    drone.target_found_in_iteration = iteration + 1
-                    if not target_found: # Update global target found only once
-                        target_found = True
-                        iterations_to_find_target = iteration + 1
+        # Generate random start and target positions
+        unknown_target_pos = generate_random_target_pos()
 
-                    path = reconstruct_path(new_node)
-                    drone.path = path
-                    # Visualize the final path
-                    for i in range(len(path) - 1):
-                        p.addUserDebugLine(path[i], path[i+1], [1, 0, 0], lineWidth=3, lifeTime=0)
+        # Initialize drones and RRTs
+        drones = [Drone(i, start_positions[i%len(start_positions)]) for i in range(num_drones)]
 
-        # Move drone along the path
-        if drone.target_found:
-            drone.move_along_path()
+        # Reset obstacles for each run
+        #for obstacle in obstacles:
+        #    p.removeBody(obstacle)
+            
+        obstacles = []
+        obstacles.append(create_obstacle([0, 0, 0.5], [0.5, 0.5, 0.5]))
+        obstacles.append(create_obstacle([-1, 2, 1], [0.2, 0.2, 1], [0.5, 0.5, 1, 1]))
+        obstacles.append(create_obstacle([1.5, -1, 0.75], [0.7, 0.3, 0.75], [1, 0.5, 0, 1]))
+        obstacles.append(create_obstacle([3, 3, 0.5], [0.2, 0.2, 0.5]))
+        obstacles.append(create_obstacle([-3, -3, 0.5], [0.2, 0.2, 0.5]))
+        print(f"  1-Run: {run + 1}")
 
-    # Simulation step
-    p.stepSimulation()
-    time.sleep(1./240.)
+        target_found = False
+        iterations_to_find_target = 0
 
-    if all(drone.target_found for drone in drones):
-        break
+        for iteration in range(NUM_ITERATIONS):
+            for drone in drones:
+                # RRT algorithm for each drone
+                if not drone.target_found:
+                    random_config = get_random_config()
+                    nearest = nearest_node(drone.tree, random_config)
+                    new_pos = steer(nearest.pos, random_config)
+
+                    if is_collision_free(drone, nearest.pos, new_pos):
+                        new_node = Node(new_pos)
+                        new_node.parent = nearest
+                        new_node.signal_strength = get_signal_strength(new_pos, unknown_target_pos)
+                        drone.tree.append(new_node)
+
+                        # Check if target is found based on signal strength
+                        if new_node.signal_strength > SIGNAL_FOUND_THRESHOLD:
+                            print(f"    Target found by drone {drone.id} in iteration {iteration+1}!")
+                            drone.target_found = True
+                            drone.target_found_in_iteration = iteration + 1
+                            if not target_found: # Update global target found only once
+                                target_found = True
+                                iterations_to_find_target = iteration + 1
+
+                            path = reconstruct_path(new_node)
+                            drone.path = path
+
+                # Move drone along the path
+                if drone.target_found:
+                    drone.move_along_path()
+
+            # Simulation step
+            p.stepSimulation()
+
+            if all(drone.target_found for drone in drones):
+                break
+
+        # Write results to file
+        with open(results_file, "a") as f:
+            result = {
+                "run": run + 1,
+                "num_drones": num_drones,
+                "target_found": target_found,
+                "iterations": iterations_to_find_target if target_found else NUM_ITERATIONS,
+                "target_pos": list(unknown_target_pos)
+            }
+            for i, drone in enumerate(drones):
+                result[f"drone_{i}_start_pos"] = list(start_positions[i%len(start_positions)])
+                result[f"drone_{i}_found_in_iteration"] = drone.target_found_in_iteration if drone.target_found else -1
+            f.write(json.dumps(result) + "\n")
 
 # --- End Simulation ---
 p.disconnect()
-
-# Print the result
-if target_found:
-    print(f"Target found in {iterations_to_find_target} iterations!")
-else:
-    print("Target not found within the maximum number of iterations.")
