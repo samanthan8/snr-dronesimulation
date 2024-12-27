@@ -7,6 +7,7 @@ import random
 import math
 import json
 import os
+import csv
 
 # --- Parameters ---
 NUM_ITERATIONS = 500
@@ -16,6 +17,7 @@ BETA = 2   # Importance of heuristic (distance)
 Q = 100  # Pheromone deposit amount
 INITIAL_PHEROMONE = 1.0
 DRONE_RADIUS = 0.1
+DRONE_SPEED = 0.05  # Add drone speed
 SEARCH_RADIUS = 1.0
 GRID_SIZE = 0.5
 HOVER_HEIGHT = 1.0
@@ -26,17 +28,11 @@ SIGNAL_NOISE_STD = 0.05
 NUM_RUNS = 30
 NUM_DRONES_OPTIONS = [1, 5, 10, 15, 20, 25, 30]
 
-# Define the path to the local directory where the URDF files are stored
-LOCAL_URDF_PATH = os.path.dirname(os.path.abspath(__file__))  # Get the directory of the current script
-# Define the URDF file paths
-plane_urdf_path = os.path.join(LOCAL_URDF_PATH, "plane.urdf")  # Make sure 'plane.urdf' is in the same folder
-quadrotor_urdf_path = os.path.join(LOCAL_URDF_PATH, "quadrotor.urdf")  # Make sure 'quadrotor.urdf' is in the same folder
-
 # --- Environment Setup ---
 physicsClient = p.connect(p.DIRECT)
 p.setAdditionalSearchPath(pybullet_data.getDataPath())
 p.setGravity(0, 0, -9.81)
-planeId = p.loadURDF(plane_urdf_path)
+planeId = p.loadURDF("plane.urdf")
 
 # --- Function to Generate Random Positions ---
 def generate_random_start_pos():
@@ -103,9 +99,9 @@ class Drone:
         self.path = [get_cell_from_pos(start_pos)]
         self.path_positions = [start_pos]
         self.has_found_goal = False
-        self.target_found = False
+        self.target_found = False # Track if the drone found the target
         self.target_found_in_iteration = -1
-        self.body = p.loadURDF(quadrotor_urdf_path, self.pos, globalScaling=DRONE_RADIUS * 10)
+        self.body = p.loadURDF("quadrotor.urdf", self.pos, globalScaling=DRONE_RADIUS * 10)
 
     def calculate_probabilities(self, pheromone_grid, target_pos):
         current_cell = get_cell_from_pos(self.pos)
@@ -140,9 +136,10 @@ class Drone:
                     probabilities[next_cell] = attractiveness
                     total += attractiveness
 
-        # Normalize probabilities
-        for cell in probabilities:
-            probabilities[cell] /= total
+        # Normalize probabilities (only if total is not zero)
+        if total > 0:
+            for cell in probabilities:
+                probabilities[cell] /= total
 
         return probabilities
 
@@ -173,13 +170,15 @@ class Drone:
             next_cell = self.choose_next_cell(pheromone_grid, target_pos)
             target_pos_for_move = [next_cell[0], next_cell[1], next_cell[2]]
 
+            # Use signal strength for target detection
             if get_signal_strength(self.pos, target_pos) > SIGNAL_FOUND_THRESHOLD:
+                self.target_found = True
                 self.has_found_goal = True
                 self.target_found_in_iteration = iteration
                 print(f"Target found by drone {self.id} in iteration {self.target_found_in_iteration}!")
                 self.path.append(get_cell_from_pos(target_pos))
                 self.path_positions.append(target_pos)
-                self.pos = target_pos
+                self.pos = target_pos  # Move to the perceived target location
             else:
                 self.path.append(next_cell)
                 self.path_positions.append(target_pos_for_move)
@@ -193,9 +192,8 @@ class Drone:
         if distance > 0:
             direction = direction / distance
 
-        # Limit the movement to a small step
-        max_step = 0.05
-        actual_movement = min(distance, max_step)
+        # Limit the movement to the drone's speed
+        actual_movement = min(distance, DRONE_SPEED)
         new_pos = np.array(self.pos) + direction * actual_movement
 
         return list(new_pos)
@@ -213,12 +211,12 @@ class Drone:
     def deposit_pheromone(self, pheromone_grid):
         if self.has_found_goal:
             path_length = len(self.path)
-            pheromone_amount = Q / path_length  # You might want to base this on signal strength instead
+            pheromone_amount = Q / path_length
             for cell in self.path:
                 pheromone_grid[cell] += pheromone_amount
 
 # --- Create Results Directory ---
-RESULTS_DIR = "aco_simulation_results"
+RESULTS_DIR = "aco_simulation_results_csv"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # --- Main Loop ---
@@ -245,68 +243,74 @@ start_positions = [[-4, -4, HOVER_HEIGHT],
                    [1, 1, HOVER_HEIGHT]]
 
 for num_drones in NUM_DRONES_OPTIONS:
-    results_file = os.path.join(RESULTS_DIR, f"aco_num_drones_{num_drones}.jsonl")
+    results_file = os.path.join(RESULTS_DIR, f"aco_num_drones_{num_drones}.csv")
     print(f"Running ACO with {num_drones} drones...")
 
-    for run in range(NUM_RUNS):
-        print(f"  Run: {run + 1}")
+    with open(results_file, mode='w', newline='') as csvfile:
+        fieldnames = ['run', 'num_drones', 'target_found', 'iterations', 'target_pos']
+        for i in range(num_drones):
+            fieldnames.extend([f'drone_{i}_start_pos', f'drone_{i}_found_in_iteration'])
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
 
-        # Reinitialize PyBullet environment for each run
-        p.resetSimulation()
-        p.setGravity(0, 0, -9.81)
-        planeId = p.loadURDF(plane_urdf_path)
+        for run in range(NUM_RUNS):
+            print(f"  Run: {run + 1}")
 
-        # Generate random target position
-        target_pos = generate_random_target_pos()
+            # Reinitialize PyBullet environment for each run
+            p.resetSimulation()
+            p.setGravity(0, 0, -9.81)
+            planeId = p.loadURDF("plane.urdf")
 
-        # Initialize pheromone grid
-        pheromone_grid = initialize_pheromone_grid()
+            # Generate random target position
+            target_pos = generate_random_target_pos()
 
-        # Initialize drones
-        drones = [Drone(i, start_positions[i%len(start_positions)]) for i in range(num_drones)]
+            # Initialize pheromone grid
+            pheromone_grid = initialize_pheromone_grid()
 
-        # Reset obstacles for each run
-        # for obstacle in obstacles:
-        #     p.removeBody(obstacle)
-        obstacles = []
-        obstacles.append(create_obstacle([0, 0, 0.5], [0.5, 0.5, 0.5]))
-        obstacles.append(create_obstacle([-1, 2, 1], [0.2, 0.2, 1], [0.5, 0.5, 1, 1]))
-        obstacles.append(create_obstacle([1.5, -1, 0.75], [0.7, 0.3, 0.75], [1, 0.5, 0, 1]))
-        obstacles.append(create_obstacle([3, 3, 0.5], [0.2, 0.2, 0.5]))
-        obstacles.append(create_obstacle([-3, -3, 0.5], [0.2, 0.2, 0.5]))
+            # Initialize drones
+            drones = [Drone(i, start_positions[i%len(start_positions)]) for i in range(num_drones)]
 
-        target_found = False
-        iterations_to_find_target = 0
+            # Reset obstacles for each run
+            # for obstacle in obstacles:
+            #     p.removeBody(obstacle)
+            obstacles = []
+            obstacles.append(create_obstacle([0, 0, 0.5], [0.5, 0.5, 0.5]))
+            obstacles.append(create_obstacle([-1, 2, 1], [0.2, 0.2, 1], [0.5, 0.5, 1, 1]))
+            obstacles.append(create_obstacle([1.5, -1, 0.75], [0.7, 0.3, 0.75], [1, 0.5, 0, 1]))
+            obstacles.append(create_obstacle([3, 3, 0.5], [0.2, 0.2, 0.5]))
+            obstacles.append(create_obstacle([-3, -3, 0.5], [0.2, 0.2, 0.5]))
 
-        for iteration in range(NUM_ITERATIONS):
-            # Move drones
-            for drone in drones:
-                drone.move(iteration, pheromone_grid, target_pos)
+            target_found = False
+            iterations_to_find_target = 0
 
-            # Deposit pheromone
-            for drone in drones:
-                drone.deposit_pheromone(pheromone_grid)
+            for iteration in range(NUM_ITERATIONS):
+                # Move drones
+                for drone in drones:
+                    drone.move(iteration, pheromone_grid, target_pos)
 
-            # Evaporate pheromone
-            for cell in pheromone_grid:
-                pheromone_grid[cell] *= (1 - EVAPORATION_RATE)
+                # Deposit pheromone
+                for drone in drones:
+                    drone.deposit_pheromone(pheromone_grid)
 
-            # Check if any drone has found the target
-            for drone in drones:
-                if drone.has_found_goal and drone.target_found_in_iteration != -1:
-                    target_found = True
-                    iterations_to_find_target = drone.target_found_in_iteration + 1
+                # Evaporate pheromone
+                for cell in pheromone_grid:
+                    pheromone_grid[cell] *= (1 - EVAPORATION_RATE)
+
+                # Check if any drone has found the target
+                for drone in drones:
+                    if drone.target_found and drone.target_found_in_iteration != -1:
+                        target_found = True
+                        iterations_to_find_target = drone.target_found_in_iteration + 1
+                        break
+
+                # Simulation step
+                p.stepSimulation()
+
+                # Exit the loop if the target is found
+                if target_found:
                     break
 
-            # Simulation step
-            p.stepSimulation()
-
-            # Exit the loop if the target is found
-            if target_found:
-                break
-
-        # Write results to file
-        with open(results_file, "a") as f:
+            # Write results to file
             result = {
                 "run": run + 1,
                 "num_drones": num_drones,
@@ -317,7 +321,7 @@ for num_drones in NUM_DRONES_OPTIONS:
             for i, drone in enumerate(drones):
                 result[f"drone_{i}_start_pos"] = list(start_positions[i%len(start_positions)])
                 result[f"drone_{i}_found_in_iteration"] = drone.target_found_in_iteration if drone.target_found else -1
-            f.write(json.dumps(result) + "\n")
+            writer.writerow(result)
 
 # --- End Simulation ---
 p.disconnect()

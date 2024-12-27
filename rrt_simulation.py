@@ -4,7 +4,7 @@ import pybullet_data
 import time
 import numpy as np
 import random
-import json
+import csv
 import os
 
 # --- Parameters ---
@@ -18,7 +18,7 @@ SIGNAL_FOUND_THRESHOLD = 0.7
 SEARCH_RADIUS = 0.5
 SIGNAL_NOISE_STD = 0.05
 NUM_RUNS = 30
-NUM_DRONES_OPTIONS = [1, 5, 10, 15, 20, 25, 30]  # Different numbers of drones to evaluate
+NUM_DRONES_OPTIONS = [1, 5, 10, 15, 20, 25, 30]
 
 # Define the path to the local directory where the URDF files are stored
 LOCAL_URDF_PATH = os.path.dirname(os.path.abspath(__file__))  # Get the directory of the current script
@@ -26,9 +26,8 @@ LOCAL_URDF_PATH = os.path.dirname(os.path.abspath(__file__))  # Get the director
 plane_urdf_path = os.path.join(LOCAL_URDF_PATH, "plane.urdf")  # Make sure 'plane.urdf' is in the same folder
 quadrotor_urdf_path = os.path.join(LOCAL_URDF_PATH, "quadrotor.urdf")  # Make sure 'quadrotor.urdf' is in the same folder
 
-
 # --- Environment Setup ---
-physicsClient = p.connect(p.DIRECT)  # Use p.DIRECT for faster simulation without GUI
+physicsClient = p.connect(p.DIRECT)
 p.setAdditionalSearchPath(pybullet_data.getDataPath())
 p.setGravity(0, 0, -9.81)
 planeId = p.loadURDF(plane_urdf_path)
@@ -158,7 +157,7 @@ def reconstruct_path(goal_node):
     return path[::-1]
 
 # --- Create Results Directory ---
-RESULTS_DIR = "rrt_simulation_results"
+RESULTS_DIR = "rrt_simulation_results_csv"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # --- Main Loop ---
@@ -185,76 +184,80 @@ start_positions = [[-4, -4, HOVER_HEIGHT],
                    [1, 1, HOVER_HEIGHT]]
 
 for num_drones in NUM_DRONES_OPTIONS:
-    results_file = os.path.join(RESULTS_DIR, f"rrt_num_drones_{num_drones}.jsonl")
+    results_file = os.path.join(RESULTS_DIR, f"rrt_num_drones_{num_drones}.csv")
     print(f"Running RRT with {num_drones} drones...")
 
-    for run in range(NUM_RUNS):
-        print(f"  Run: {run + 1}")
+    with open(results_file, mode='w', newline='') as csvfile:
+        fieldnames = ['run', 'num_drones', 'target_found', 'iterations', 'target_pos']
+        for i in range(num_drones):
+            fieldnames.extend([f'drone_{i}_start_pos', f'drone_{i}_found_in_iteration'])
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
 
-        # Reinitialize PyBullet environment for each run
-        p.resetSimulation()
-        p.setGravity(0, 0, -9.81)
-        planeId = p.loadURDF(plane_urdf_path)
+        for run in range(NUM_RUNS):
+            print(f"  Run: {run + 1}")
 
-        # Generate random start and target positions
-        unknown_target_pos = generate_random_target_pos()
+            # Reinitialize PyBullet environment for each run
+            p.resetSimulation()
+            p.setGravity(0, 0, -9.81)
+            planeId = p.loadURDF(plane_urdf_path)
 
-        # Initialize drones and RRTs
-        drones = [Drone(i, start_positions[i%len(start_positions)]) for i in range(num_drones)]
+            # Generate random start and target positions
+            unknown_target_pos = generate_random_target_pos()
 
-        # Reset obstacles for each run
-        #for obstacle in obstacles:
-        #    p.removeBody(obstacle)
-            
-        obstacles = []
-        obstacles.append(create_obstacle([0, 0, 0.5], [0.5, 0.5, 0.5]))
-        obstacles.append(create_obstacle([-1, 2, 1], [0.2, 0.2, 1], [0.5, 0.5, 1, 1]))
-        obstacles.append(create_obstacle([1.5, -1, 0.75], [0.7, 0.3, 0.75], [1, 0.5, 0, 1]))
-        obstacles.append(create_obstacle([3, 3, 0.5], [0.2, 0.2, 0.5]))
-        obstacles.append(create_obstacle([-3, -3, 0.5], [0.2, 0.2, 0.5]))
-        print(f"  1-Run: {run + 1}")
+            # Initialize drones and RRTs
+            drones = [Drone(i, start_positions[i%len(start_positions)]) for i in range(num_drones)]
 
-        target_found = False
-        iterations_to_find_target = 0
+            # Reset obstacles for each run
+            # for obstacle in obstacles:
+            #     p.removeBody(obstacle)
+            obstacles = []
+            obstacles.append(create_obstacle([0, 0, 0.5], [0.5, 0.5, 0.5]))
+            obstacles.append(create_obstacle([-1, 2, 1], [0.2, 0.2, 1], [0.5, 0.5, 1, 1]))
+            obstacles.append(create_obstacle([1.5, -1, 0.75], [0.7, 0.3, 0.75], [1, 0.5, 0, 1]))
+            obstacles.append(create_obstacle([3, 3, 0.5], [0.2, 0.2, 0.5]))
+            obstacles.append(create_obstacle([-3, -3, 0.5], [0.2, 0.2, 0.5]))
 
-        for iteration in range(NUM_ITERATIONS):
-            for drone in drones:
-                # RRT algorithm for each drone
-                if not drone.target_found:
-                    random_config = get_random_config()
-                    nearest = nearest_node(drone.tree, random_config)
-                    new_pos = steer(nearest.pos, random_config)
+            target_found = False
+            iterations_to_find_target = 0
 
-                    if is_collision_free(drone, nearest.pos, new_pos):
-                        new_node = Node(new_pos)
-                        new_node.parent = nearest
-                        new_node.signal_strength = get_signal_strength(new_pos, unknown_target_pos)
-                        drone.tree.append(new_node)
+            for iteration in range(NUM_ITERATIONS):
+                for drone in drones:
+                    # RRT algorithm for each drone
+                    if not drone.target_found:
+                        random_config = get_random_config()
+                        nearest = nearest_node(drone.tree, random_config)
+                        new_pos = steer(nearest.pos, random_config)
 
-                        # Check if target is found based on signal strength
-                        if new_node.signal_strength > SIGNAL_FOUND_THRESHOLD:
-                            print(f"    Target found by drone {drone.id} in iteration {iteration+1}!")
-                            drone.target_found = True
-                            drone.target_found_in_iteration = iteration + 1
-                            if not target_found: # Update global target found only once
-                                target_found = True
-                                iterations_to_find_target = iteration + 1
+                        if is_collision_free(drone, nearest.pos, new_pos):
+                            new_node = Node(new_pos)
+                            new_node.parent = nearest
+                            new_node.signal_strength = get_signal_strength(new_pos, unknown_target_pos)
+                            drone.tree.append(new_node)
 
-                            path = reconstruct_path(new_node)
-                            drone.path = path
+                            # Check if target is found based on signal strength
+                            if new_node.signal_strength > SIGNAL_FOUND_THRESHOLD:
+                                print(f"    Target found by drone {drone.id} in iteration {iteration+1}!")
+                                drone.target_found = True
+                                drone.target_found_in_iteration = iteration + 1
+                                if not target_found: # Update global target found only once
+                                    target_found = True
+                                    iterations_to_find_target = iteration + 1
 
-                # Move drone along the path
-                if drone.target_found:
-                    drone.move_along_path()
+                                path = reconstruct_path(new_node)
+                                drone.path = path
 
-            # Simulation step
-            p.stepSimulation()
+                    # Move drone along the path
+                    if drone.target_found:
+                        drone.move_along_path()
 
-            if all(drone.target_found for drone in drones):
-                break
+                # Simulation step
+                p.stepSimulation()
 
-        # Write results to file
-        with open(results_file, "a") as f:
+                if all(drone.target_found for drone in drones):
+                    break
+
+            # Write results to file
             result = {
                 "run": run + 1,
                 "num_drones": num_drones,
@@ -265,7 +268,7 @@ for num_drones in NUM_DRONES_OPTIONS:
             for i, drone in enumerate(drones):
                 result[f"drone_{i}_start_pos"] = list(start_positions[i%len(start_positions)])
                 result[f"drone_{i}_found_in_iteration"] = drone.target_found_in_iteration if drone.target_found else -1
-            f.write(json.dumps(result) + "\n")
+            writer.writerow(result)
 
 # --- End Simulation ---
 p.disconnect()

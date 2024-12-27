@@ -7,6 +7,7 @@ import random
 import math
 import json
 import os
+import csv
 
 # --- Parameters ---
 NUM_ITERATIONS = 500
@@ -159,7 +160,7 @@ class Drone:
         return get_signal_strength(self.pos, target_pos)
 
 # --- Create Results Directory ---
-RESULTS_DIR = "gso_simulation_results"
+RESULTS_DIR = "gso_simulation_results_csv"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # --- Main Loop ---
@@ -186,67 +187,73 @@ start_positions = [[-4, -4, HOVER_HEIGHT],
                    [1, 1, HOVER_HEIGHT]]
 
 for num_drones in NUM_DRONES_OPTIONS:
-    results_file = os.path.join(RESULTS_DIR, f"gso_num_drones_{num_drones}.jsonl")
+    results_file = os.path.join(RESULTS_DIR, f"gso_num_drones_{num_drones}.csv")
     print(f"Running GSO with {num_drones} drones...")
 
-    for run in range(NUM_RUNS):
-        print(f"  Run: {run + 1}")
+    with open(results_file, mode='w', newline='') as csvfile:
+        fieldnames = ['run', 'num_drones', 'target_found', 'iterations', 'target_pos']
+        for i in range(num_drones):
+            fieldnames.extend([f'drone_{i}_start_pos', f'drone_{i}_found_in_iteration'])
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
 
-        # Reinitialize PyBullet environment for each run
-        p.resetSimulation()
-        p.setGravity(0, 0, -9.81)
-        planeId = p.loadURDF(plane_urdf_path)
+        for run in range(NUM_RUNS):
+            print(f"  Run: {run + 1}")
 
-        # Generate random target position
-        target_pos = generate_random_target_pos()
+            # Reinitialize PyBullet environment for each run
+            p.resetSimulation()
+            p.setGravity(0, 0, -9.81)
+            planeId = p.loadURDF(plane_urdf_path)
 
-        # Initialize drones
-        drones = [Drone(i, start_positions[i%len(start_positions)]) for i in range(num_drones)]
+            # Generate random target position
+            target_pos = generate_random_target_pos()
 
-        # Reset obstacles for each run
-        for obstacle in obstacles:
-            p.removeBody(obstacle)
-        obstacles = []
-        obstacles.append(create_obstacle([0, 0, 0.5], [0.5, 0.5, 0.5]))
-        obstacles.append(create_obstacle([-1, 2, 1], [0.2, 0.2, 1], [0.5, 0.5, 1, 1]))
-        obstacles.append(create_obstacle([1.5, -1, 0.75], [0.7, 0.3, 0.75], [1, 0.5, 0, 1]))
-        obstacles.append(create_obstacle([3, 3, 0.5], [0.2, 0.2, 0.5]))
-        obstacles.append(create_obstacle([-3, -3, 0.5], [0.2, 0.2, 0.5]))
+            # Initialize drones
+            drones = [Drone(i, start_positions[i%len(start_positions)]) for i in range(num_drones)]
 
-        target_found = False
-        iterations_to_find_target = 0
+            # Reset obstacles for each run
+            # for obstacle in obstacles:
+            #     p.removeBody(obstacle)
+            obstacles = []
+            obstacles.append(create_obstacle([0, 0, 0.5], [0.5, 0.5, 0.5]))
+            obstacles.append(create_obstacle([-1, 2, 1], [0.2, 0.2, 1], [0.5, 0.5, 1, 1]))
+            obstacles.append(create_obstacle([1.5, -1, 0.75], [0.7, 0.3, 0.75], [1, 0.5, 0, 1]))
+            obstacles.append(create_obstacle([3, 3, 0.5], [0.2, 0.2, 0.5]))
+            obstacles.append(create_obstacle([-3, -3, 0.5], [0.2, 0.2, 0.5]))
 
-        for iteration in range(NUM_ITERATIONS):
-            # Update luciferin for each drone
-            for drone in drones:
-                drone.update_luciferin(target_pos)
+            target_found = False
+            iterations_to_find_target = 0
 
-            # Update sensor range and find neighbors for each drone
-            for drone in drones:
-                neighbors = drone.find_neighbors(drones)
-                drone.update_sensor_range(neighbors)
+            for iteration in range(NUM_ITERATIONS):
+                # Update luciferin for each drone
+                for drone in drones:
+                    drone.update_luciferin(target_pos)
 
-            # Move drones towards neighbors
-            for drone in drones:
-                neighbors = drone.find_neighbors(drones)
-                drone.move_towards_neighbors(neighbors, iteration, target_pos)
+                # Update sensor range and find neighbors for each drone
+                for drone in drones:
+                    neighbors = drone.find_neighbors(drones)
+                    drone.update_sensor_range(neighbors)
 
-            # Check if any drone has found the target
-            for drone in drones:
-                if drone.target_found and drone.target_found_in_iteration != -1:
-                    target_found = True
-                    iterations_to_find_target = drone.target_found_in_iteration + 1
+                # Move drones towards neighbors
+                for drone in drones:
+                    neighbors = drone.find_neighbors(drones)
+                    drone.move_towards_neighbors(neighbors, iteration, target_pos)
+
+                # Check if any drone has found the target
+                for drone in drones:
+                    if drone.target_found and drone.target_found_in_iteration != -1:
+                        target_found = True
+                        iterations_to_find_target = drone.target_found_in_iteration + 1
+                        break
+
+                # Simulation step
+                p.stepSimulation()
+
+                # Exit the loop if the target is found
+                if target_found:
                     break
 
-            # Simulation step
-            p.stepSimulation()
-
-            # Exit the loop if the target is found
-            if target_found:
-                break
-
-        # Write results to file
-        with open(results_file, "a") as f:
+            # Write results to file
             result = {
                 "run": run + 1,
                 "num_drones": num_drones,
@@ -257,7 +264,7 @@ for num_drones in NUM_DRONES_OPTIONS:
             for i, drone in enumerate(drones):
                 result[f"drone_{i}_start_pos"] = list(start_positions[i%len(start_positions)])
                 result[f"drone_{i}_found_in_iteration"] = drone.target_found_in_iteration if drone.target_found else -1
-            f.write(json.dumps(result) + "\n")
+            writer.writerow(result)
 
 # --- End Simulation ---
 p.disconnect()
