@@ -146,7 +146,7 @@ class Drone:
     def choose_next_cell(self, pheromone_grid, target_pos):
         probabilities = self.calculate_probabilities(pheromone_grid, target_pos)
         if not probabilities:
-            return get_cell_from_pos(self.pos)
+            return None
 
         rand_num = random.random()
         cumulative_prob = 0
@@ -168,6 +168,9 @@ class Drone:
                 self.has_found_goal = False
         else:
             next_cell = self.choose_next_cell(pheromone_grid, target_pos)
+            if next_cell is None:
+                return
+            
             target_pos_for_move = [next_cell[0], next_cell[1], next_cell[2]]
 
             # Use signal strength for target detection
